@@ -32,6 +32,14 @@ namespace RepoMover
                 NamingStrategy = new SnakeCaseNamingStrategy()
             }
         };
+        
+        // todos (Dhyan)
+        // Gitlab - https://docs.gitlab.com/ee/api/README.html
+        // Github - https://developer.github.com/v4/
+        // Create Github repo through the api and get the repository name
+        // Push to github from temp file
+        
+        // Create wiki page for merge request comments
 
         static async Task<int> Main(string[] args)
         {
