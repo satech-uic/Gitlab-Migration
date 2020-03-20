@@ -35,7 +35,7 @@ namespace RepoMover
         
         // todos (Dhyan)
         // Gitlab - https://docs.gitlab.com/ee/api/README.html
-        // Github - https://developer.github.com/v4/
+        // Github - https://developer.github.com/v3/
         // Create Github repo through the api and get the repository name
         // Push to github from temp file
         
