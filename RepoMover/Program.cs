@@ -4,15 +4,10 @@ using System.Linq;
 using System.Management.Automation;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using Newtonsoft.Json;
-using System.Text.RegularExpressions;
-using System.Threading.Channels;
 using System.Threading.Tasks;
-using Microsoft.CodeAnalysis.Operations;
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
@@ -32,108 +27,67 @@ namespace RepoMover
                 NamingStrategy = new SnakeCaseNamingStrategy()
             }
         };
-        
+
         // todos (Dhyan)
         // Gitlab - https://docs.gitlab.com/ee/api/README.html
         // Github - https://developer.github.com/v3/
-        // Create Github repo through the api and get the repository name
-        // Push to github from temp file
-        
+        // Create Github repo through the api and get the repository name (Done)
+        // Push to github from temp file (Done)
+        // Transfer wikis using the same method as repos (Done)
+        // Investigate rate limiting for issue creation.
+
         // Create wiki page for merge request comments
 
         static async Task<int> Main(string[] args)
         {
             Setup();
-            // await CloneRepository();
 
-            // var res = await _glClient.GetStringAsync("https://sa-vm-gitlab.cc.uic.edu/api/v4/projects");
-            // var res = await PaginateGitlabRequest($"projects/{_config["Gitlab:ProjectID"]}/issues");
-            // var res = await GitlabApi.GetProjectIssues();
-            // Console.WriteLine(res.Count);
-            // Console.WriteLine(res.FirstOrDefault());
+            Console.WriteLine("Creating Repo on Github...");
+            var repoName = await GitHubApi.CreateRepository(
+                _config["Github:RepoName"], 
+                _config["Github:RepoDescription"]);
+            
+            Console.WriteLine("Transferring Repo...");
+            await TransferRepository(repoName);
+            
+            if (_config.GetSection("Gitlab")["Wiki"] != null)
+            {
+                Console.WriteLine(
+                    "You will need to visit the repo's wiki page and create a default page with no content." +
+                    "This will get overwritten. Here's the link:\n"+
+                    $"https://github.com/satech-uic/{repoName}/wiki\n"+
+                    "Press enter when done.");
+                Console.ReadLine();
 
-            // var issue = res.First();
+                Console.WriteLine("Transferring Wiki...");
+                await TransferWiki(repoName);
+            }
             
-            // var issue = await GitlabApi.GetIssue(71);
-            // var comments = await GitlabApi.GetIssueComments(issue["iid"].ToObject<int>());
-            // var x = await GitlabApi.GetIssueComments(71);
-            // var sorted = new JArray(x.OrderBy(i=>DateTime.Parse(i["created_at"].ToObject<string>())));
-            // Console.WriteLine(sorted);
+            Console.WriteLine("Transferring issues...");
+            await TransferIssues(repoName);
             
-            // var githubIssue = await GitHubApi.CreateIssue(
-            // new {
-            //     Title = "Test Issue",
-            //     Body = "# Markdown\nDon't mind me, just putting an @jterha2 and some *snazzy* **markdown**. Oh, and here's a [link](https://www.google.com).",
-            //     // Body = "test",
-            //     Labels = new[]{"Non Existent Label", "Emoji Label 🐛"}
-            //     // Assignees = new [] {"jterha2", "ccunni3@uic.edu", "idk"}
-            // }, "lrs-api");
-            
-            // Console.WriteLine(githubIssue);
-
-            await TransferIssues("lrs-api");
             
 
-            // _ghClient.PostAsync("/repos/satech/lrs-api/issues", new StringContent(
-            //     JsonConvert.SerializeObject(new
-            //     {
-            //         Title = issue["title"].Value<string>(),
-            //         Body = $"{issue["description"]}<br/><br/>Created By: {issue["author"]["name"].Value<string>()}",
-            //         Labels = (issue["labels"] as JArray)?.ToObject<string[]>(),
-            //         Assignees = (issue["assignees"] as JArray)?.ToObject<string[]>()
-            //     })
-            //     ,
-            //     Encoding.Unicode, "application/json"));
+            
+
+            // var repoName = await GitHubApi.CreateRepository("test-repo2", "This is a test repository!");
 
 
-            // Console.WriteLine(JsonConvert.SerializeObject(x));
+            // await TransferIssues("lrs-api");
 
-
-            // var res = await _client.GetAsync("/user");
-
-
-            // var res = await _client.GetStringAsync("/repos/satech-uic/lrs-api");
-            // var x = JObject.Parse(res);
-            // Console.WriteLine(x["id"].ToString());
-            // Console.WriteLine(JsonConvert.SerializeObject(
-            //     new
-            //     {
-            //         Name = "Repository Name",
-            //         Description = "This is the description",
-            //         Visibility = "private",
-            //         HasIssues = true,
-            //         HasWiki = true
-            //     }, _jsonSettings));
-
-            // Console.WriteLine(res);
-            // var dir = CreateTempDirectory();
-            // Console.WriteLine(dir);
-
-            // var s = JsonSerializer.Serialize(new
-            // {
-            //     Name = "Repository Name",
-            //     Description = "This is the description",
-            //     Visibility = "private",
-            //     HasIssues = true,
-            //     HasWiki = true
-            // }, new JsonSerializerOptions()
-            // {
-            //     WriteIndented = true,
-            //     PropertyNamingPolicy = new GithubJsonPolicy()
-            // });
-
-            // Console.WriteLine(s);
 
             return 0;
         }
 
         private static async Task TransferIssues(string githubRepo)
         {
-            // var issues = await GitlabApi.GetProjectIssues();
-            var issues = new JArray(await GitlabApi.GetIssue(80));
+            var issues = await GitlabApi.GetProjectIssues();
+            // var issues = new JArray(await GitlabApi.GetIssue(80));
 
+            int count = 1, tot = issues.Count;
             foreach (var issue in issues)
             {
+                Console.Write($"\rissue {count} of {tot}");
                 var issueId = issue["iid"].ToObject<int>();
                 var comments = await GitlabApi.GetIssueComments(issueId);
 
@@ -160,31 +114,57 @@ namespace RepoMover
                 {
                     await GitHubApi.CloseIssue(githubRepo, githubId);
                 }
+
+                ++count;
             }
         }
 
-        private static async Task CloneRepository()
+        private static async Task TransferWiki(string githubRepoName)
         {
             using var temp = new TemporaryDirectory();
+            using var ps = PowerShell.Create();
 
+            var path = temp.Create();
+            var source = _config["Gitlab:Wiki"];
+            var repo = source.Substring(
+                source.LastIndexOf('/') + 1);
+
+            await CloneToPath(ps, source, path, repo);
+            await PushToGithub(ps, $"git@github.com:satech-uic/{githubRepoName}.wiki.git");
+        }
+
+        private static async Task TransferRepository(string githubRepoName)
+        {
+            using var temp = new TemporaryDirectory();
+            using var ps = PowerShell.Create();
 
             var path = temp.Create();
             var source = _config["Gitlab:Source"];
             var repo = source.Substring(
                 source.LastIndexOf('/') + 1);
 
-            await CloneToPath(source, path, repo);
+            await CloneToPath(ps, source, path, repo);
+            await PushToGithub(ps, $"git@github.com:satech-uic/{githubRepoName}.git");
+
+            await ExecPowershell(ps);
             
             //todo push to github
-            
+
             Console.WriteLine("Done");
         }
 
-        private static async Task CloneToPath(string source, string path, string repo)
+        //ps should already be at location from Clone To path
+        private static async Task PushToGithub(PowerShell ps, string remote)
         {
-            using var ps = PowerShell.Create();
+            Console.WriteLine($"Changing origin...");
 
+            ps.AddScript($"git remote set-url origin {remote}").AddStatement();
+            ps.AddScript($"git push --mirror origin");
+            
+        }
 
+        private static async Task CloneToPath(PowerShell ps, string source, string path, string repo)
+        {
             Console.WriteLine($"Cloning into {path}...");
 
             ps.AddCommand("Set-Location").AddParameter("Path", path).AddStatement();
@@ -192,6 +172,12 @@ namespace RepoMover
             ps.AddCommand("Set-Location").AddParameter("Path", repo).AddStatement();
             ps.AddCommand("ls");
 
+            // await ExecPowershell(ps);
+            // ps.
+        }
+
+        private static async Task ExecPowershell(PowerShell ps)
+        {
             var result = await ps.InvokeAsync();
 
             foreach (var e in ps.Streams.Error)
@@ -259,7 +245,7 @@ namespace RepoMover
             {
                 return new JArray(
                     (await PaginateGitlabRequest($"projects/{_config["Gitlab:ProjectID"]}/issues/{issueId}/notes"))
-                        .OrderBy(i=>DateTime.Parse(i["created_at"].ToObject<string>())));
+                    .OrderBy(i => DateTime.Parse(i["created_at"].ToObject<string>())));
             }
 
             private static async Task<JArray> PaginateGitlabRequest(string path, string queryString = "?",
@@ -291,14 +277,46 @@ namespace RepoMover
 
         private static class GitHubApi
         {
+            public static async Task<string> CreateRepository(string repoName, string description = "")
+            {
+                var res = await _ghClient.PostAsync($"/orgs/satech-uic/repos", new StringContent(
+                    JsonConvert.SerializeObject(
+                        new
+                        {
+                            Name = repoName,
+                            Description = description,
+                            Private = true,
+                            Visibility = "private",
+                            HasIssues = true,
+                            HasWiki = true
+                        }, _jsonSettings), Encoding.Default, "application/json"));
+
+                res.EnsureSuccessStatusCode();
+                var json = JObject.Parse(await res.Content.ReadAsStringAsync());
+                if (!json["private"].ToObject<bool>())
+                {
+                    throw new Exception("Visibility Problem");
+                }
+
+                return json["name"].ToObject<string>();
+            }
+
             public static async Task<int> CreateIssue(object msg, string repo)
             {
                 var res = await _ghClient.PostAsync($"/repos/satech-uic/{repo}/issues", new StringContent(
                     JsonConvert.SerializeObject(msg, _jsonSettings), Encoding.Default, "application/json"));
 
-                res.EnsureSuccessStatusCode();
-                var json = JObject.Parse(await res.Content.ReadAsStringAsync());
-                return json["number"].ToObject<int>();
+                try
+                {
+                    res.EnsureSuccessStatusCode();
+                    var json = JObject.Parse(await res.Content.ReadAsStringAsync());
+                    return json["number"].ToObject<int>();
+                }
+                catch (HttpRequestException)
+                {
+                    Console.WriteLine(res.Content.ReadAsStringAsync());
+                    throw;
+                }
             }
 
             public static async Task CloseIssue(string repo, int issueId)
@@ -307,17 +325,18 @@ namespace RepoMover
                     new StringContent(JsonConvert.SerializeObject(
                         new
                         {
-                            State="closed"
+                            State = "closed"
                         }
                         , _jsonSettings), Encoding.Default, "application/json"));
-                
+
                 res.EnsureSuccessStatusCode();
             }
 
             public static async Task<int> AddCommentToIssue(object msg, string repo, int issueId)
             {
                 var res = await _ghClient.PostAsync($"/repos/satech-uic/{repo}/issues/{issueId}/comments",
-                    new StringContent(JsonConvert.SerializeObject(msg, _jsonSettings), Encoding.Default, "application/json"));
+                    new StringContent(JsonConvert.SerializeObject(msg, _jsonSettings), Encoding.Default,
+                        "application/json"));
 
                 res.EnsureSuccessStatusCode();
                 var json = JObject.Parse(await res.Content.ReadAsStringAsync());
