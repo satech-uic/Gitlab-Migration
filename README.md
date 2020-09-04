@@ -14,7 +14,7 @@ The solution targets .NET Core 3.1.
 
 ## Usage
 
-The script looks for configuration in `appsettings.json` and `sercrets.json`. Create the `secrets.json` file using the example file `secrents.json.example.json`.
+The script looks for configuration in `appsettings.json` and `secrets.json`. Create the `secrets.json` file using the example file `secrets.json.example.json`.
 
 Pass in authentication tokens for both APIs using `secrets.json`. You will need to create API tokens with **read/write permissions** to transfer the repo and other data.
 
