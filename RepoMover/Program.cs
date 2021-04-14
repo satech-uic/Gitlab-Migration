@@ -1,14 +1,14 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Management.Automation;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text;
+using Newtonsoft.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 
@@ -19,55 +19,67 @@ namespace RepoMover
         private static IConfiguration _config;
         private static HttpClient _ghClient, _glClient;
 
-        private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
+        private static JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
         {
+            // Formatting = Formatting.Indented,
             ContractResolver = new DefaultContractResolver
             {
                 NamingStrategy = new SnakeCaseNamingStrategy()
             }
         };
 
-        private static async Task<int> Main(string[] args)
+        // todos (Dhyan)
+        // Gitlab - https://docs.gitlab.com/ee/api/README.html
+        // Github - https://developer.github.com/v3/
+        // Create Github repo through the api and get the repository name (Done)
+        // Push to github from temp file (Done)
+        // Transfer wikis using the same method as repos (Done)
+        // Investigate rate limiting for issue creation.
+
+        // Create wiki page for merge request comments
+
+        static async Task<int> Main(string[] args)
         {
             Setup();
 
-            try
-            {
-                Console.WriteLine("Creating GitHub repository...");
-                var repoName = await GitHubApi.CreateRepository(_config["Github:RepoName"], _config["Github:RepoDescription"]);
-                Console.WriteLine($"Created {repoName} on GitHub.");
+            Console.WriteLine("Creating Repo on Github...");
+            var repoName = await GitHubApi.CreateRepository(
+                _config["Github:RepoName"],
+                _config["Github:RepoDescription"]);
 
-                Console.WriteLine("Transferring repository from GitLab to GitHub...");
-                await TransferRepository(repoName);
-                Console.WriteLine($"Transferred {repoName} to GitHub.");
-
-                if (_config.GetSection("Gitlab")["Wiki"] != null)
-                {
-                    Console.WriteLine($@"You will need to visit the repo's wiki page and create a default page with no content.
-This will get overwritten. Here's the link: https://github.com/satech-uic/{repoName}/wiki
-Press enter when done.");
-                    Console.ReadLine();
-
-                    Console.WriteLine("Transferring wiki...");
-                    await TransferWiki(repoName);
-                    Console.WriteLine("Wiki transferred");
-                }
-
-                Console.WriteLine("Transferring issues...");
-                await TransferIssues(repoName);
-                Console.WriteLine("Issues transferred.");
-            }
-            catch(Exception e)
-            {
-                Console.WriteLine(e.Message);
-            }
+            Console.WriteLine("Transferring Repo...");
+            await TransferRepository(repoName);
             
+            if (!string.IsNullOrEmpty(_config.GetSection("Gitlab")["Wiki"]))
+            {
+                Console.WriteLine(
+                    "You will need to visit the repo's wiki page and create a default page with no content." +
+                    "This will get overwritten. Here's the link:\n" +
+                    $"https://github.com/satech-uic/{repoName}/wiki\n" +
+                    "Press enter when done.");
+                Console.ReadLine();
+
+                Console.WriteLine("Transferring Wiki...");
+                await TransferWiki(repoName);
+            }
+
+            Console.WriteLine("Transferring issues...");
+            await TransferIssues(repoName);
+
+
+            // var repoName = await GitHubApi.CreateRepository("test-repo2", "This is a test repository!");
+
+
+            // await TransferIssues("lrs-api");
+
+
             return 0;
         }
 
         private static async Task TransferIssues(string githubRepo)
         {
             var issues = await GitlabApi.GetProjectIssues();
+            // var issues = new JArray(await GitlabApi.GetIssue(80));
 
             int count = 1, tot = issues.Count;
             foreach (var issue in issues)
@@ -76,34 +88,31 @@ Press enter when done.");
                 var issueId = issue["iid"].ToObject<int>();
                 var comments = await GitlabApi.GetIssueComments(issueId);
 
-                try
+                var githubId = await GitHubApi.CreateIssue(new
                 {
-                    // TODO: use the new batch endpoint to add comments to issues on GitHub
-                    var githubId = await GitHubApi.CreateIssue(new
+                    Title = issue["title"].Value<string>(),
+                    Body =
+                        $"{issue["description"].Value<string>()}\n\n > Created By: {issue["author"]["name"].Value<string>()}",
+                    Labels = issue["labels"].ToObject<string[]>()
+                }, githubRepo);
+
+                foreach (var comment in comments)
+                {
+                    await GitHubApi.AddCommentToIssue(new
                     {
-                        Title = issue["title"].Value<string>(),
-                        Body =
-                            $"{(issue["description"]).Value<string>()}\n\n > Created By: {issue["author"]["name"].Value<string>()}",
-                        Labels = issue["labels"]?.ToObject<string[]>()
-                    }, githubRepo);
+                        Body = $@"{comment["body"].ToObject<string>()}
 
-                    foreach (var comment in comments)
-                        await GitHubApi.AddCommentToIssue(new
-                        {
-                            Body = $@"{comment["body"]?.ToObject<string>()}
-> Created By: {comment["author"]?["name"]?.ToObject<string>()}
-> Created At: {DateTime.Parse(comment["created_at"]?.ToObject<string>() ?? "1970-01-01"):MM/dd/yyyy hh:mm tt}"
-                        }, githubRepo, githubId);
-
-                    if (issue["state"]?.ToObject<string>() == "closed") await GitHubApi.CloseIssue(githubRepo, githubId);
-
-                    ++count;
+> Created By: {comment["author"]["name"].ToObject<string>()}
+> Created At: {DateTime.Parse(comment["created_at"].ToObject<string>()):MM/dd/yyyy hh:mm tt}"
+                    }, githubRepo, githubId);
                 }
-                catch (Exception e)
+
+                if (issue["state"].ToObject<string>() == "closed")
                 {
-
-                    Console.WriteLine(e.Message);
+                    await GitHubApi.CloseIssue(githubRepo, githubId);
                 }
+
+                ++count;
             }
         }
 
@@ -118,9 +127,7 @@ Press enter when done.");
                 source.LastIndexOf('/') + 1);
 
             await CloneToPath(ps, source, path, repo);
-            await PushToGithub(ps, $"git@github.com:{_config["Github:OrgName"]}/{githubRepoName}.wiki.git");
-            
-            await ExecPowershell(ps);
+            await PushToGithub(ps, $"git@github.com:satech-uic/{githubRepoName}.wiki.git");
         }
 
         private static async Task TransferRepository(string githubRepoName)
@@ -134,18 +141,22 @@ Press enter when done.");
                 source.LastIndexOf('/') + 1);
 
             await CloneToPath(ps, source, path, repo);
-            await PushToGithub(ps, $"git@github.com:{_config["Github:OrgName"]}/{githubRepoName}.git");
+            await PushToGithub(ps, $"git@github.com:satech-uic/{githubRepoName}.git");
 
             await ExecPowershell(ps);
+
+            //todo push to github
+
+            Console.WriteLine("Done");
         }
 
-        // ps should already be at location from Clone To path
+        //ps should already be at location from Clone To path
         private static async Task PushToGithub(PowerShell ps, string remote)
         {
-            Console.WriteLine("Changing origin...");
+            Console.WriteLine($"Changing origin...");
 
             ps.AddScript($"git remote set-url origin {remote}").AddStatement();
-            ps.AddScript("git push --mirror origin");
+            ps.AddScript($"git push --mirror origin");
         }
 
         private static async Task CloneToPath(PowerShell ps, string source, string path, string repo)
@@ -156,15 +167,24 @@ Press enter when done.");
             ps.AddScript($"git clone --mirror {source}").AddStatement();
             ps.AddCommand("Set-Location").AddParameter("Path", repo).AddStatement();
             ps.AddCommand("ls");
+
+            await ExecPowershell(ps);
+            // ps.
         }
 
         private static async Task ExecPowershell(PowerShell ps)
         {
             var result = await ps.InvokeAsync();
 
-            foreach (var e in ps.Streams.Error) Console.WriteLine($"error: {e}");
+            foreach (var e in ps.Streams.Error)
+            {
+                Console.WriteLine($"error: {e}");
+            }
 
-            foreach (var x in result) Console.WriteLine($"PS:  {x}");
+            foreach (var x in result)
+            {
+                Console.WriteLine($"PS:  {x}");
+            }
         }
 
         private static void Setup()
@@ -179,7 +199,7 @@ Press enter when done.");
             //Setup HTTP Clients
 
             //github
-            _ghClient = new HttpClient
+            _ghClient = new HttpClient()
             {
                 BaseAddress = new Uri(_config["Github:Url"]),
                 DefaultRequestHeaders =
@@ -237,7 +257,10 @@ Press enter when done.");
                         json
                     );
 
-                    if (x.Count == 0) break;
+                    if (x.Count == 0)
+                    {
+                        break;
+                    }
 
                     result.Merge(x);
 
@@ -250,17 +273,9 @@ Press enter when done.");
 
         private static class GitHubApi
         {
-            public class ClientError
-            {
-                public string resource { get; set; }
-                public string field { get; set; }
-                public string code { get; set; }
-                public string message { get; set; }
-            }
-
             public static async Task<string> CreateRepository(string repoName, string description = "")
             {
-                var res = await _ghClient.PostAsync($"/orgs/{_config["Github:OrgName"]}/repos", new StringContent(
+                var res = await _ghClient.PostAsync($"/orgs/satech-uic/repos", new StringContent(
                     JsonConvert.SerializeObject(
                         new
                         {
@@ -270,81 +285,124 @@ Press enter when done.");
                             Visibility = "private",
                             HasIssues = true,
                             HasWiki = true
-                        }, JsonSettings), Encoding.Default, "application/json"));
+                        }, _jsonSettings), Encoding.Default, "application/json"));
 
-                try
+                res.EnsureSuccessStatusCode();
+                var json = JObject.Parse(await res.Content.ReadAsStringAsync());
+                if (!json["private"].ToObject<bool>())
                 {
-                    res.EnsureSuccessStatusCode();
-                    var json = JObject.Parse(await res.Content.ReadAsStringAsync());
-                    if (!json["private"].ToObject<bool>()) throw new Exception("Visibility Problem");
-                    return json["name"].ToObject<string>();
+                    throw new Exception("Visibility Problem");
                 }
-                catch (HttpRequestException)
-                {
-                    var json = JObject.Parse(await res.Content.ReadAsStringAsync());
-                    var msg = json["message"].ToObject<string>();
-                    var errors = json["errors"].ToObject<List<ClientError>>();
-                    var sb = new StringBuilder();
-                    sb.AppendLine(msg);
-                    foreach (var err in errors)
-                    {
-                        sb.AppendLine($"\t{err.resource}[{err.field}]: {(err.code == "custom" ? err.message : err.code)}");
-                    }
-                    throw new Exception(sb.ToString());
-                }
+
+                return json["name"].ToObject<string>();
             }
 
             public static async Task<int> CreateIssue(object msg, string repo)
             {
-                var res = await _ghClient.PostAsync($"/repos/{_config["Github:OrgName"]}/{repo}/issues", new StringContent(
-                    JsonConvert.SerializeObject(msg, JsonSettings), Encoding.Default, "application/json"));
+                HttpResponseMessage res = null;
+                do
+                {
+                    try
+                    {
+                        res = await _ghClient.PostAsync($"/repos/satech-uic/{repo}/issues", new StringContent(
+                            JsonConvert.SerializeObject(msg, _jsonSettings), Encoding.Default, "application/json"));
+                        res.EnsureSuccessStatusCode();
+                        var json = JObject.Parse(await res.Content.ReadAsStringAsync());
+                        await HandleRateLimit(res);
+                        return json["number"].ToObject<int>();
+                    }
+                    catch (HttpRequestException)
+                    {
+                        var error = await res.Content.ReadAsStringAsync();
+                        if (error.Contains("You have triggered an abuse detection mechanism"))
+                        {
+                            Console.WriteLine(
+                                "\nGithub says your abusing the api ¯\\_(ツ)_/¯¯. Waiting a minute and trying again....");
+                            await Task.Delay(61 * 1000);
+                            Console.WriteLine("Done Waiting...Trying Again");
+                            continue;
+                        }
 
-                try
-                {
-                    res.EnsureSuccessStatusCode();
-                    var json = JObject.Parse(await res.Content.ReadAsStringAsync());
-                    return json["number"].ToObject<int>();
-                }
-                catch (HttpRequestException)
-                {
-                    throw new Exception($"Unable to create issue. {res.StatusCode}: {res.Content.ReadAsStringAsync()}");
-                }
+                        Console.WriteLine(error);
+                        foreach (var (key, value) in res.Content.Headers)
+                        {
+                            Console.WriteLine($"{key}: {value.FirstOrDefault()}");
+                        }
+
+                        throw;
+                    }
+                } while (true);
             }
 
             public static async Task CloseIssue(string repo, int issueId)
             {
-                var res = await _ghClient.PatchAsync($"/repos/{_config["Github:OrgName"]}/{repo}/issues/{issueId}",
+                var res = await _ghClient.PatchAsync($"/repos/satech-uic/{repo}/issues/{issueId}",
                     new StringContent(JsonConvert.SerializeObject(
                         new
                         {
                             State = "closed"
                         }
-                        , JsonSettings), Encoding.Default, "application/json"));
+                        , _jsonSettings), Encoding.Default, "application/json"));
 
-                try
-                {
-                    res.EnsureSuccessStatusCode();
-                }
-                catch(HttpRequestException)
-                {
-                    Console.WriteLine($"Unable to close GitHub issue #{issueId}. {res.StatusCode}: {res.Content.ReadAsStringAsync()}");
-                }
+                res.EnsureSuccessStatusCode();
             }
 
-            public static async Task AddCommentToIssue(object msg, string repo, int issueId)
+            public static async Task<int> AddCommentToIssue(object msg, string repo, int issueId)
             {
-                var res = await _ghClient.PostAsync($"/repos/{_config["Github:OrgName"]}/{repo}/issues/{issueId}/comments",
-                    new StringContent(JsonConvert.SerializeObject(msg, JsonSettings), Encoding.Default,
-                        "application/json"));
+                HttpResponseMessage res = null;
+                do
+                {
+                    try
+                    {
+                        res = await _ghClient.PostAsync($"/repos/satech-uic/{repo}/issues/{issueId}/comments",
+                            new StringContent(JsonConvert.SerializeObject(msg, _jsonSettings), Encoding.Default,
+                                "application/json"));
+                        res.EnsureSuccessStatusCode();
+                        var json = JObject.Parse(await res.Content.ReadAsStringAsync());
+                        await HandleRateLimit(res);
+                        return json["id"].ToObject<int>();
+                    }
+                    catch
+                    {
+                        var error = await res.Content.ReadAsStringAsync();
+                        if (error.Contains("abuse detection"))
+                        {
+                            Console.WriteLine(
+                                "\nGithub says your abusing the api ¯\\_(ツ)_/¯¯. Waiting a minute and trying again....");
+                            await Task.Delay(61 * 1000);
+                            Console.WriteLine("Done Waiting...Trying Again");
+                            continue;
+                        }
 
-                try
-                {
-                    res.EnsureSuccessStatusCode();
-                }
-                catch(HttpRequestException)
-                {
-                    Console.WriteLine($"Unable to add comment to GitHub issue #{issueId}. {res.StatusCode}: {res.Content.ReadAsStringAsync()}");
-                }
+                        Console.WriteLine(error);
+                        foreach (var (key, value) in res.Content.Headers)
+                        {
+                            Console.WriteLine($"{key}: {value.FirstOrDefault()}");
+                        }
+
+                        throw;
+                    }
+                } while (true);
+            }
+
+            private static async Task HandleRateLimit(HttpResponseMessage res)
+            {
+                int.TryParse(res.Headers.GetValues("X-RateLimit-Limit").FirstOrDefault(), out var limit);
+                int.TryParse(res.Headers.GetValues("X-RateLimit-Remaining").FirstOrDefault(), out var remaining);
+                long.TryParse(res.Headers.GetValues("X-RateLimit-Reset").FirstOrDefault(), out var reset);
+
+                // Console.WriteLine("Limit: " + limit);
+                // Console.WriteLine("Remaining: " + remaining);
+                // Console.WriteLine("Reset: " + reset);
+
+                if (remaining > 1)
+                    return;
+
+                Console.Write("\nWaiting to avoid rate limiting...");
+                var until = DateTimeOffset.FromUnixTimeSeconds(reset + 1).DateTime;
+                await Task.Delay(until - DateTime.Now);
+                Console.WriteLine("done");
+                await Task.Delay(until - DateTime.Now);
             }
         }
 
@@ -352,20 +410,20 @@ Press enter when done.");
         {
             private string _path;
 
+            public string Create()
+            {
+                _path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+                Directory.CreateDirectory(_path);
+                return _path;
+            }
+
             public void Dispose()
             {
                 if (string.IsNullOrWhiteSpace(_path)) return;
 
                 var dir = new DirectoryInfo(_path);
                 SetAttributesNormal(dir);
-                Directory.Delete(_path, true);
-            }
-
-            public string Create()
-            {
-                _path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-                Directory.CreateDirectory(_path);
-                return _path;
+                Directory.Delete(_path, recursive: true);
             }
 
             //https://stackoverflow.com/questions/1701457/directory-delete-doesnt-work-access-denied-error-but-under-windows-explorer-it
@@ -377,7 +435,10 @@ Press enter when done.");
                     subDir.Attributes = FileAttributes.Normal;
                 }
 
-                foreach (var file in dir.GetFiles()) file.Attributes = FileAttributes.Normal;
+                foreach (var file in dir.GetFiles())
+                {
+                    file.Attributes = FileAttributes.Normal;
+                }
             }
         }
     }
